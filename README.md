@@ -1,0 +1,2 @@
+# MyFirstPlugin
+Synthesizer stuff
