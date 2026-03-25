@@ -1,1 +1,1 @@
-# SimpleJucePluginTemplate
+# My First Synthesizer
