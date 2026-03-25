@@ -1,2 +1,1 @@
-# MyFirstPlugin
-Synthesizer stuff
+# SimpleJucePluginTemplate
