@@ -12,23 +12,35 @@
 #include <juce_audio_devices/midi_io/juce_MidiMessageCollector.h>
 #include <juce_audio_devices/sources/juce_AudioSourcePlayer.h>
 
-#include "../cmake-build-debug/_deps/juce-src/modules/juce_graphics/fonts/harfbuzz/hb-ot-math-table.hh"
 
 
 namespace synthesizer_oscillator
 {
   using namespace juce;
 
+
+  // global function (in this namespace) to add a sample by channel to the output buffer
+  static void g_addSampleByChannel(AudioBuffer<float>& outputBuffer, const auto renderedSample, const int sampleIndex)
+  {
+    using namespace std::views;
+
+    // addSample() is used instead of setSample() because we want polyphony!!
+      // setSample() would always cause your synthesizer to be monophonic no matter how many voices you add
+    for (const auto channelIndex : iota(0 ,outputBuffer.getNumChannels()))
+      outputBuffer.addSample(channelIndex, sampleIndex, static_cast<float>(renderedSample));
+  }
+
+
   // Describe the sounds being played
   struct sine_wave_sound : SynthesiserSound // sine wave sound DERIVES from synthesizer sound
   {
-    bool appliesToNote(int noteNumber) override {return true;}
-    bool appliesToChannel(int channelNumber) override {return true;}
+    bool appliesToNote(int /*noteNumber*/) override {return true;}
+    bool appliesToChannel(int /*channelNumber*/) override {return true;}
   };
   struct saw_wave_sound : sine_wave_sound {};
 
   // Define how the sounds are actually played
-  class sine_wave_voice : public SynthesiserVoice
+  class sine_wave_voice final : public SynthesiserVoice
   {
     double current_phase = 0.0;
     double phase_change = 0.0;
@@ -42,7 +54,7 @@ namespace synthesizer_oscillator
       return dynamic_cast<sine_wave_sound*>(sound) != nullptr;
     }
 
-    void startNote(int midiNoteNumber, const float velocity, SynthesiserSound* sound, int currentPitchWheelPosition) override
+    void startNote(const int midiNoteNumber, const float velocity, SynthesiserSound* /*sound*/, int /*currentPitchWheelPosition*/) override
     {
       level = static_cast<double>(velocity) * 0.15;
       tail_off = 0.0;
@@ -66,21 +78,24 @@ namespace synthesizer_oscillator
       }
     }
 
+    static auto renderSineSample(const double current_phase, const double level, const double tail_off)
+      {return std::sin(current_phase) * level * tail_off;}
+
+    static auto renderSineSample(const double current_phase, const double level)
+      {return std::sin(current_phase) * level;}
+
     void renderNextBlock (AudioBuffer<float>& outputBuffer, int sampleIndex, int numSamples) override
     {
-      if (phase_change != 0.0) // good: do allat
+      if (!approximatelyEqual(phase_change,0.0)) // good: do allat
       {
-        if (tail_off > 0.0) // Calculate the tail of audio
+        if (!approximatelyEqual(tail_off, 0.0)) // Calculate the tail of audio
         {
           while (--numSamples >= 0) // go down for every sample
           {
-            const auto renderedSample = std::sin (current_phase) * level * tail_off; // current sample = sine(angle) at volume * tail off AKA decrement volume
-
-            for (auto i = outputBuffer.getNumChannels(); --i >= 0;) // for every channel.... add the sample to the starting sample
-              outputBuffer.addSample (i, sampleIndex, static_cast<float>(renderedSample));
+            g_addSampleByChannel(outputBuffer, renderSineSample(current_phase, level, tail_off), sampleIndex);
 
             current_phase += phase_change; // change angle duh
-            ++sampleIndex; // go to next sample
+            ++sampleIndex;
 
             tail_off *= 0.99; // just a lil off it
 
@@ -96,10 +111,7 @@ namespace synthesizer_oscillator
         {
           while (--numSamples >= 0)
           {
-            const auto renderedSample = std::sin(current_phase) * level;
-
-            for (auto i = outputBuffer.getNumChannels(); --i >= 0;)
-              outputBuffer.addSample (i, sampleIndex, static_cast<float>(renderedSample));
+            g_addSampleByChannel(outputBuffer, renderSineSample(current_phase, level), sampleIndex);
 
             current_phase += phase_change;
             ++sampleIndex;
@@ -108,13 +120,13 @@ namespace synthesizer_oscillator
       }
     }
 
-    void pitchWheelMoved(int newPitchWheelValue) override {}
+    void pitchWheelMoved(int /*newPitchWheelValue*/) override {}
 
-    void controllerMoved(int controllerNumber, int newControllerValue) override {}
+    void controllerMoved(int /*controllerNumber*/, int /*newControllerValue*/) override {}
 
   };
 
-  class saw_wave_voice : public SynthesiserVoice
+  class saw_wave_voice final : public SynthesiserVoice
   {
     double level = 0.0;
     double tail_off = 0.0;
@@ -126,13 +138,13 @@ namespace synthesizer_oscillator
       return dynamic_cast<sine_wave_sound*>(sound) != nullptr;
     }
 
-    void startNote(int midiNoteNumber, const float velocity, SynthesiserSound* sound, int currentPitchWheelPosition) override
+    void startNote(const int midiNoteNumber, const float velocity, SynthesiserSound* /*sound*/, int /*currentPitchWheelPosition*/) override
     {
       level = static_cast<double>(velocity) * 0.15;
       tail_off = 0.0;
-      midiNoteNumber = getCurrentlyPlayingNote();
 
       current_frequency = MidiMessage::getMidiNoteInHertz(midiNoteNumber);
+
     }
 
     void stopNote(const float /*velocity*/, const bool allowTailOff) override
@@ -146,26 +158,18 @@ namespace synthesizer_oscillator
         clearCurrentNote();
     }
 
-    static double moduloOfOne(const double dividend){return dividend - static_cast<int>(dividend);}
+    static double moduloOfOne(const double dividend)
+      {return dividend - static_cast<int>(dividend);}
 
-    static void renderSawSample(AudioBuffer<float>& outputBuffer, const int sampleIndex, const double current_frequency, const double level, const double tail_off)
-    {
-      using namespace std::views;
 
-        const auto renderedSample = (2 * moduloOfOne(current_frequency*sampleIndex) * level - level) * tail_off;
+    // Renders the saw sample WITH a tail
+    static auto renderSawSample(const int sampleIndex, const double current_frequency, const double level, const double tail_off)
+      {return (2 * moduloOfOne(current_frequency*sampleIndex) * level - level) * tail_off;}
 
-        for (const auto channelIndex : iota(0 ,outputBuffer.getNumChannels()))
-          outputBuffer.setSample(channelIndex, sampleIndex, static_cast<float>(renderedSample));
-    }
-    static void renderSawSample(AudioBuffer<float>& outputBuffer, const int sampleIndex, const double current_frequency, const double level)
-    {
-      using namespace std::views;
 
-      const auto renderedSample = (2 * moduloOfOne(current_frequency*sampleIndex) * level - level);
-
-      for (const auto channelIndex : iota(0 ,outputBuffer.getNumChannels()))
-        outputBuffer.setSample(channelIndex, sampleIndex, static_cast<float>(renderedSample));
-    }
+    // render the saw sample WITHOUT a tail
+    static auto renderSawSample(const int sampleIndex, const double current_frequency, const double level)
+      {return (2 * moduloOfOne(current_frequency*sampleIndex) * level - level);}
 
     void renderNextBlock(AudioBuffer<float>& outputBuffer, int sampleIndex, int numSamples) override
     {
@@ -173,14 +177,19 @@ namespace synthesizer_oscillator
 
       while (--numSamples >= 0) // go down for every sample until the next block
       {
-        if (tail_off > 0.0)
+        // just to be safe. I could use tail off > 0, but I don't see a reason why either method is better
+        // SO I'm just using the safe way out!!!
+        if (!approximatelyEqual(tail_off, 0.0))
         {
-          renderSawSample(outputBuffer, sampleIndex, current_frequency, level, tail_off);
+          g_addSampleByChannel(outputBuffer,
+            renderSawSample(sampleIndex, current_frequency, level, tail_off), sampleIndex);
           ++sampleIndex;
 
+          // Lower the tail_off
           tail_off *=0.99;
 
-          if (tail_off <= 0.005) // no more sound!!!
+          // clear the note if tail off is at an insignificant value
+          if (tail_off <= 0.005)
           {
             clearCurrentNote();
             break;
@@ -188,29 +197,50 @@ namespace synthesizer_oscillator
         }
         else
         {
-          renderSawSample(outputBuffer, sampleIndex, current_frequency, level);
+          g_addSampleByChannel(outputBuffer,
+            renderSawSample(sampleIndex, current_frequency, level), sampleIndex);
           ++sampleIndex;
         }
       }
     }
 
-    void pitchWheelMoved(int newPitchWheelValue) override {}
+    void pitchWheelMoved(int /*newPitchWheelValue*/) override {}
 
-    void controllerMoved(int controllerNumber, int newControllerValue) override {}
+    void controllerMoved(int /*controllerNumber*/, int /*newControllerValue*/) override {}
   };
 
-  struct SynthesizerAudioSource : AudioSource
+  struct SynthesizerAudioSource final : AudioSource
   {
-    Synthesiser synthesizer; // actual synth duh
-    MidiKeyboardState& midiKeyboardState; // midi keyboard on screen
-    MidiMessageCollector midiCollector; // where all them messages are
 
-    SynthesizerAudioSource(MidiKeyboardState& keyboard_state) : midiKeyboardState(keyboard_state)
+    // Create our Synthesizer!!!
+    Synthesiser synthesizer;
+    // Create the Midi Keyboard that'll appear on screen
+    MidiKeyboardState& midiKeyboardState;
+    // Create the collector for all of our Midi messages
+    MidiMessageCollector midiCollector;
+    enum oscillatorType{sine, saw};
+
+    explicit SynthesizerAudioSource(MidiKeyboardState& keyboard_state, const oscillatorType oscType) : midiKeyboardState(keyboard_state)
     {
-      for (int i = 0; i < 8; i++)
-        synthesizer.addVoice(new sine_wave_voice());
+      switch (oscType)
+      {
+        case sine:
+          for (int i = 0; i < 8; i++)
+            {synthesizer.addVoice(new sine_wave_voice());}
+          useSineWaveSound();
+          break;
+        case saw:
+          for (int i = 0; i < 8; i++)
+            {synthesizer.addVoice(new saw_wave_voice());}
+          useSawWaveSound();
+          break;
+        default:
+          for (int i = 0; i < 8; i++)
+            synthesizer.addVoice(new sine_wave_voice());
 
-      useSineWaveSound();
+          useSineWaveSound();
+          break;
+      }
     }
 
     void useSineWaveSound()
@@ -247,12 +277,11 @@ namespace synthesizer_oscillator
       midiKeyboardState.processNextMidiBuffer(incomingMidi, 0, bufferToFill.numSamples, true);
 
       //process the midi events and output
-
       synthesizer.renderNextBlock(*bufferToFill.buffer, incomingMidi, 0, bufferToFill.numSamples);
     }
   };
 
-  class SynthesizerAudioDeviceCallback : public AudioIODeviceCallback
+  class SynthesizerAudioDeviceCallback final : public AudioIODeviceCallback
   {
   AudioSourcePlayer audioSourcePlayer;
 
