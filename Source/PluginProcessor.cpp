@@ -17,9 +17,7 @@
     }
 
     AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
-    {
-
-    }
+    = default;
 
     //==============================================================================
     const juce::String AudioPluginAudioProcessor::getName() const
@@ -89,9 +87,6 @@
     //==============================================================================
     void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int framesPerBlock)
     {
-        // Use this method as the place to do any pre-playback
-        // initialization that you need..
-
 
     }
 
@@ -128,7 +123,6 @@
     void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                                   juce::MidiBuffer& midiMessages)
     {
-        juce::ignoreUnused (midiMessages);
 
         juce::ScopedNoDenormals noDenormals;
         auto totalNumInputChannels  = getTotalNumInputChannels();
